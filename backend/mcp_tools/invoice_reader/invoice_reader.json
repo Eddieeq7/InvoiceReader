@@ -1,0 +1,26 @@
+{
+  "name": "invoice_reader",
+  "description": "MCP tool for extracting and parsing invoice data from PDF files",
+  "version": "1.0.0",
+  "methods": [
+    {
+      "name": "extract",
+      "description": "Extracts invoice data from a PDF file URL",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_url": {
+            "type": "string",
+            "description": "URL or path to the PDF invoice file"
+          }
+        },
+        "required": ["file_url"]
+      },
+      "returns": {
+        "type": "object",
+        "description": "Extracted invoice data including metadata, line items, and totals"
+      }
+    }
+  ]
+}
+

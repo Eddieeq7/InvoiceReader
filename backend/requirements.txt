@@ -1,0 +1,23 @@
+# Invoice Reader Backend - Python Dependencies
+# Python 3.8+ required
+
+# Core dependencies
+# TODO: Add specific versions once OCR and parsing libraries are chosen
+# Example dependencies (uncomment and specify versions as needed):
+# pdfplumber>=0.10.0
+# pytesseract>=0.3.10
+# Pillow>=10.0.0
+# opencv-python>=4.8.0
+# numpy>=1.24.0
+# pandas>=2.0.0
+
+# MCP Server dependencies (if using FastAPI or similar)
+# fastapi>=0.104.0
+# uvicorn>=0.24.0
+# pydantic>=2.0.0
+
+# Development dependencies
+# pytest>=7.4.0
+# black>=23.0.0
+# flake8>=6.0.0
+
