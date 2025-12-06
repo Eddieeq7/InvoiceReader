@@ -76,18 +76,38 @@ function App() {
 
   const [selectedInvoice, setSelectedInvoice] = useState(null)
 
-  const handleUpload = (file) => {
+  const handleUpload = (invoiceData) => {
+    // Convert the extracted invoice data to the app's format
     const newInvoice = {
       id: invoices.length + 1,
-      filename: file.name,
-      vendor: 'Unknown Vendor',
-      date: new Date().toISOString().split('T')[0],
-      amount: '$0.00',
-      status: 'processing',
-      preview: null
+      filename: `${invoiceData.invoice_number || 'invoice'}.pdf`,
+      vendor: invoiceData.vendor || 'Unknown Vendor',
+      date: invoiceData.date || new Date().toISOString().split('T')[0],
+      amount: `$${invoiceData.total.toFixed(2)}`,
+      status: 'processed',
+      preview: {
+        invoiceNumber: invoiceData.invoice_number || 'N/A',
+        date: invoiceData.date || 'N/A',
+        dueDate: invoiceData.due_date || 'N/A',
+        vendor: invoiceData.vendor || 'Unknown',
+        items: invoiceData.items.map(item => ({
+          description: item.description,
+          quantity: item.quantity,
+          price: `$${item.unit_price.toFixed(2)}`,
+          total: `$${item.total.toFixed(2)}`
+        })),
+        subtotal: `$${invoiceData.subtotal.toFixed(2)}`,
+        tax: `$${invoiceData.tax.toFixed(2)}`,
+        total: `$${invoiceData.total.toFixed(2)}`,
+        currency: invoiceData.currency,
+        confidence: invoiceData.metadata.confidence
+      }
     }
-    setInvoices([...invoices, newInvoice])
-    // TODO: Implement actual file upload and processing
+    
+    setInvoices([newInvoice, ...invoices])
+    
+    // Automatically select the newly uploaded invoice
+    setSelectedInvoice(newInvoice)
   }
 
   const handleInvoiceClick = (invoice) => {

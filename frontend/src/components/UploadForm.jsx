@@ -1,9 +1,12 @@
 import { useState } from 'react'
-import { Upload, FileText, X } from 'lucide-react'
+import { Upload, FileText, X, AlertCircle } from 'lucide-react'
+import { processInvoice } from '../api/mcp'
 
 const UploadForm = ({ onUpload }) => {
   const [dragActive, setDragActive] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
   const handleDrag = (e) => {
     e.preventDefault()
@@ -38,11 +41,27 @@ const UploadForm = ({ onUpload }) => {
     }
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    if (selectedFile) {
-      onUpload(selectedFile)
+    if (!selectedFile) return
+
+    setLoading(true)
+    setError('')
+
+    try {
+      // Process the invoice (upload + extract)
+      const invoiceData = await processInvoice(selectedFile)
+      
+      // Pass the extracted data to parent component
+      onUpload(invoiceData)
+      
+      // Reset form
       setSelectedFile(null)
+    } catch (err) {
+      console.error('Invoice processing failed:', err)
+      setError(err.message || 'Failed to process invoice')
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -53,12 +72,22 @@ const UploadForm = ({ onUpload }) => {
   return (
     <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
       <form onSubmit={handleSubmit}>
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start space-x-2">
+            <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-red-800">Error</p>
+              <p className="text-sm text-red-700">{error}</p>
+            </div>
+          </div>
+        )}
+        
         <div
           className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors ${
             dragActive
               ? 'border-primary-500 bg-primary-50'
               : 'border-gray-300 hover:border-primary-400'
-          }`}
+          } ${loading ? 'opacity-50 pointer-events-none' : ''}`}
           onDragEnter={handleDrag}
           onDragLeave={handleDrag}
           onDragOver={handleDrag}
@@ -92,9 +121,10 @@ const UploadForm = ({ onUpload }) => {
               </div>
               <button
                 type="submit"
-                className="w-full bg-primary-600 text-white py-3 rounded-lg font-semibold hover:bg-primary-700 transition"
+                disabled={loading}
+                className="w-full bg-primary-600 text-white py-3 rounded-lg font-semibold hover:bg-primary-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Upload Invoice
+                {loading ? 'Processing...' : 'Upload & Extract Invoice'}
               </button>
             </div>
           ) : (
