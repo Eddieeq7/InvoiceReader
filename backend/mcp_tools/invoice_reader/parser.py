@@ -84,20 +84,25 @@ def parse_invoice(text: str) -> Dict[str, Any]:
 
 
 def _extract_invoice_number(text: str) -> str:
-    """Extract invoice number using common patterns."""
+    """Extract invoice number using enhanced common patterns."""
     patterns = [
+        r'invoice\s*#\s*:?\s*([A-Z]{2,4}-\d{4}-\d{3,4})',  # Format: INV-2025-001
         r'invoice\s*number\s*:?\s*([A-Z0-9-]+)',
-        r'invoice\s*#?\s*:?\s*([A-Z0-9-]+)',
-        r'inv\s*#?\s*:?\s*([A-Z0-9-]+)',
-        r'#\s*([A-Z0-9-]{3,})',
+        r'invoice\s*#\s*:?\s*([A-Z0-9-]+)',
+        r'inv(?:oice)?\s*#?\s*:?\s*([A-Z0-9-]+)',
+        r'invoice\s*id\s*:?\s*([A-Z0-9-]+)',
+        r'#\s*:?\s*([A-Z]{2,}-\d{4}-\d{3,})',  # Catches #: INV-2025-001
+        r'#\s*([A-Z0-9-]{5,})',  # Generic # with at least 5 chars
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             invoice_num = match.group(1).strip()
-            logger.debug(f"Found invoice number: {invoice_num}")
-            return invoice_num
+            # Validate it's not just a date or something else
+            if len(invoice_num) >= 3 and not invoice_num.replace('-', '').replace('/', '').isdigit():
+                logger.debug(f"Found invoice number: {invoice_num}")
+                return invoice_num
     
     logger.debug("No invoice number found")
     return ""
@@ -124,11 +129,21 @@ def _extract_date(text: str) -> str:
 
 
 def _extract_due_date(text: str) -> str:
-    """Extract due date using common patterns."""
+    """Extract due date using enhanced common patterns including written months."""
     patterns = [
-        r'due\s+date\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        # Written month formats: "February 25, 2025" or "Feb 25, 2025"
+        r'due\s*:?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})',
+        r'due\s+date\s*:?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})',
+        r'payment\s+due\s*:?\s*([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})',
+        # Numeric formats
+        r'due\s+date\s*:?\s*(\d{4}-\d{1,2}-\d{1,2})',  # YYYY-MM-DD
+        r'due\s+date\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',  # MM/DD/YYYY
+        r'due\s*:?\s*(\d{4}-\d{1,2}-\d{1,2})',
         r'due\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'payment\s+due\s*:?\s*(\d{4}-\d{1,2}-\d{1,2})',
         r'payment\s+due\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'pay\s+by\s*:?\s*(\d{4}-\d{1,2}-\d{1,2})',
+        r'pay\s+by\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
     ]
     
     for pattern in patterns:
@@ -143,87 +158,144 @@ def _extract_due_date(text: str) -> str:
 
 
 def _extract_vendor(text: str) -> str:
-    """Extract vendor name from top of invoice."""
-    # Try to find vendor in first few lines
-    lines = text.split('\n')[:10]
+    """Extract vendor/company name from invoice using enhanced logic."""
+    lines = text.split('\n')[:20]  # Look at more lines
     
-    # Look for company indicators
-    for line in lines:
+    # Look for explicit vendor patterns first
+    vendor_patterns = [
+        r'(?:from|seller|vendor)\s*:?\s*([A-Z][A-Za-z\s&.,\'-]+(?:LLC|Inc|Ltd|Corp|Corporation|Co|Company|LLP|LP)?)',
+        r'(?:bill\s+from|billed\s+by)\s*:?\s*([A-Z][A-Za-z\s&.,\'-]+)',
+    ]
+    
+    for pattern in vendor_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            vendor = match.group(1).strip()
+            # Clean up - remove any invoice number that might have been captured
+            vendor = re.sub(r'\s+Invoice\s+#.*$', '', vendor, flags=re.IGNORECASE)
+            logger.debug(f"Found vendor via pattern: {vendor}")
+            return vendor
+    
+    # Fallback: Look for company name in first significant lines
+    # Skip page markers, invoice headers, and look for company indicators
+    for i, line in enumerate(lines):
         line = line.strip()
-        if len(line) > 3 and not re.search(r'^\d', line):
-            # Skip common headers
-            if re.search(r'invoice|page|date|bill|ship', line, re.IGNORECASE):
-                continue
-            # First substantial line is often the vendor
-            if len(line) > 5 and not line.startswith('-'):
-                logger.debug(f"Found vendor: {line}")
-                return line
+        
+        # Skip empty lines, page markers, and short lines
+        if not line or len(line) < 5 or line.startswith('---'):
+            continue
+            
+        # Skip lines that are clearly headers
+        if re.search(r'^(invoice|page|date|bill\s+to|ship\s+to|from|to)', line, re.IGNORECASE):
+            continue
+            
+        # Skip lines that are mostly numbers or symbols
+        if re.search(r'^[\d\s\-:/#]+$', line):
+            continue
+        
+        # Look for lines with company indicators (LLC, Inc, etc.)
+        company_match = re.search(r'([A-Z][A-Za-z\s&.,\'-]*?\s+(?:LLC|Inc|Ltd|Corp|Corporation|Co\.|Company|LLP|LP))', line, re.IGNORECASE)
+        if company_match:
+            vendor = company_match.group(1).strip()
+            # Clean up - stop at "Invoice" keyword if present
+            if 'Invoice' in vendor or 'invoice' in vendor:
+                vendor = vendor.split('Invoice')[0].strip()
+                vendor = vendor.split('invoice')[0].strip()
+            logger.debug(f"Found vendor with company indicator: {vendor}")
+            return vendor
+        
+        # If we're in the first few lines and find a capitalized name, that's likely the vendor
+        if i < 5 and re.match(r'^[A-Z][A-Za-z\s&.,\'-]+', line) and len(line) > 8:
+            # Extract just the company name part, stop at invoice-related keywords
+            vendor = line
+            # Stop at "Invoice" keyword
+            if 'Invoice' in vendor or 'invoice' in vendor:
+                vendor = vendor.split('Invoice')[0].strip()
+                vendor = vendor.split('invoice')[0].strip()
+            # Make sure it's not an address or common header
+            if not re.search(r'(?:street|avenue|road|drive|suite|floor|city|state|zip)', vendor, re.IGNORECASE):
+                logger.debug(f"Found vendor as first company line: {vendor}")
+                return vendor
     
     logger.debug("No vendor found")
     return ""
 
 
 def _extract_line_items(text: str) -> List[Dict[str, Any]]:
-    """Extract line items with descriptions, quantities, and prices."""
+    """Extract line items with enhanced pattern matching for various invoice formats."""
     items = []
-    
-    # Split text into lines
     lines = text.split('\n')
     
-    # Pattern for tabular format: "Item Quantity Price Total"
-    # Example: "Bananas 10 $0.60 $6.00"
-    table_pattern = r'([A-Za-z\s]+?)\s+(\d+\.?\d*)\s+\$(\d+\.?\d*)\s+\$(\d+\.?\d*)'
-    
-    # Pattern with "x" separator: "10 x Apples @ $2.50 = $25.00"
-    x_pattern = r'(\d+\.?\d*)\s+x\s+([A-Za-z\s]+?)\s+[@$]\s*\$?(\d+\.?\d*)\s+[=]?\s*\$(\d+\.?\d*)'
+    # Enhanced patterns for different invoice formats
+    patterns = [
+        # Format: "Description  Quantity lbs/units  Price  Total"
+        # Example: "Bananas 10.0 lbs $0.60 $6.00"
+        r'([A-Za-z][\w\s\-/()]*?)\s+(\d+\.?\d*)\s+(?:lbs?|units?|hrs?|pcs?)\s+\$([\d,]+\.?\d*)\s+\$([\d,]+\.?\d*)',
+        
+        # Format: "Description with Phase numbers"
+        # Example: "Software Development - Phase 1 40.0 hrs $150.00 $6000.00"
+        r'([A-Za-z][\w\s\-/()]+?)\s+(\d+\.?\d*)\s+(?:hrs?|units?|pcs?)\s+\$?([\d,]+\.?\d*)\s+\$([\d,]+\.?\d*)',
+        
+        # Format: "Description Quantity Rate Amount" (no unit specified)
+        # Example: "UI/UX Design Services 20.0 $125.00 $2500.00"
+        r'([A-Za-z][\w\s\-/()]+?)\s+(\d+\.?\d*)\s+\$?([\d,]+\.?\d*)\s+\$([\d,]+\.?\d*)',
+        
+        # Format: "Single-word item Quantity Price Total"
+        # Example: "Bananas 10.0 $0.60 $6.00"
+        r'([A-Za-z]+)\s+(\d+\.?\d*)\s+\$([\d,]+\.?\d*)\s+\$([\d,]+\.?\d*)',
+        
+        # Format with "x": "10 x Apples @ $2.50 = $25.00"
+        r'(\d+\.?\d*)\s+x\s+([A-Za-z\s\-]+?)\s+[@$]\s*\$?([\d,]+\.?\d*)\s+[=]?\s*\$([\d,]+\.?\d*)',
+        
+        # Format with hrs first: "40.0 hrs Design Services $125.00 $2500.00"
+        r'(\d+\.?\d*)\s*hrs?\s+([A-Za-z][\w\s\-/]+?)\s+\$([\d,]+\.?\d*)\s+\$([\d,]+\.?\d*)',
+    ]
     
     for line in lines:
         line = line.strip()
         
-        # Skip header lines and empty lines
-        if not line or re.search(r'quantity|unit\s+price|description|item|total', line, re.IGNORECASE):
+        # Skip empty lines, headers, and separator lines
+        if not line or len(line) < 5:
+            continue
+        if re.search(r'^(description|item|quantity|qty|rate|price|amount|total|---)', line, re.IGNORECASE):
+            continue
+        if line.count('-') > 10 or line.count('=') > 5:  # Separator lines
             continue
         
-        # Try table format first
-        match = re.search(table_pattern, line)
-        if match:
-            try:
-                description = match.group(1).strip()
-                quantity = float(match.group(2))
-                unit_price = float(match.group(3))
-                total = float(match.group(4))
-                
-                # Validate it's an actual item (not a total line)
-                if not re.search(r'subtotal|tax|total|due', description, re.IGNORECASE):
-                    items.append({
-                        "description": description,
-                        "quantity": quantity,
-                        "unit_price": unit_price,
-                        "total": total
-                    })
-                    logger.debug(f"Found item: {description} x{quantity} @ ${unit_price}")
-            except (ValueError, IndexError) as e:
-                logger.debug(f"Failed to parse line item: {e}")
-                continue
-        else:
-            # Try "x" format
-            match = re.search(x_pattern, line)
+        # Try each pattern
+        for i, pattern in enumerate(patterns):
+            match = re.search(pattern, line, re.IGNORECASE)
             if match:
                 try:
-                    quantity = float(match.group(1))
-                    description = match.group(2).strip()
-                    unit_price = float(match.group(3))
-                    total = float(match.group(4))
+                    # Different patterns have groups in different orders
+                    if i == 4 or i == 5:  # x format or hrs with qty first (quantity comes first)
+                        quantity = float(match.group(1).replace(',', ''))
+                        description = match.group(2).strip()
+                        unit_price = float(match.group(3).replace(',', '').replace('$', ''))
+                        total = float(match.group(4).replace(',', '').replace('$', ''))
+                    else:  # Description first format (all other patterns)
+                        description = match.group(1).strip()
+                        quantity = float(match.group(2).replace(',', ''))
+                        unit_price = float(match.group(3).replace(',', '').replace('$', ''))
+                        total = float(match.group(4).replace(',', '').replace('$', ''))
                     
-                    items.append({
-                        "description": description,
-                        "quantity": quantity,
-                        "unit_price": unit_price,
-                        "total": total
-                    })
-                    logger.debug(f"Found item: {description} x{quantity} @ ${unit_price}")
-                except (ValueError, IndexError) as e:
-                    logger.debug(f"Failed to parse line item: {e}")
+                    # Validate it's an actual item (not a subtotal/total line)
+                    if re.search(r'(?:sub)?total|tax|due|balance|amount\s+due|grand', description, re.IGNORECASE):
+                        continue
+                    
+                    # Validate reasonable values
+                    if quantity > 0 and unit_price >= 0 and total >= 0:
+                        items.append({
+                            "description": description,
+                            "quantity": quantity,
+                            "unit_price": unit_price,
+                            "total": total
+                        })
+                        logger.debug(f"Found item (pattern {i}): {description} x{quantity} @ ${unit_price} = ${total}")
+                        break  # Found a match, move to next line
+                        
+                except (ValueError, IndexError, AttributeError) as e:
+                    logger.debug(f"Failed to parse line item with pattern {i}: {e}")
                     continue
     
     logger.debug(f"Found {len(items)} line items")
@@ -231,19 +303,21 @@ def _extract_line_items(text: str) -> List[Dict[str, Any]]:
 
 
 def _extract_subtotal(text: str) -> float:
-    """Extract subtotal amount."""
+    """Extract subtotal amount with support for formatted numbers."""
     patterns = [
-        r'subtotal\s*:?\s*\$?(\d+\.?\d*)',
-        r'sub-total\s*:?\s*\$?(\d+\.?\d*)',
-        r'sub\s+total\s*:?\s*\$?(\d+\.?\d*)',
+        r'subtotal\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'sub-total\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'sub\s+total\s*:?\s*\$?([\d,]+\.?\d*)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             try:
-                subtotal = float(match.group(1))
-                logger.debug(f"Found subtotal: ${subtotal}")
+                # Remove commas and convert to float
+                subtotal_str = match.group(1).replace(',', '')
+                subtotal = float(subtotal_str)
+                logger.debug(f"Found subtotal: ${subtotal:,.2f}")
                 return subtotal
             except ValueError:
                 continue
@@ -253,19 +327,22 @@ def _extract_subtotal(text: str) -> float:
 
 
 def _extract_tax(text: str) -> float:
-    """Extract tax amount."""
+    """Extract tax amount with support for formatted numbers and percentages."""
     patterns = [
-        r'tax\s*(?:\([\d.]+%\))?\s*:?\s*\$?(\d+\.?\d*)',
-        r'sales\s+tax\s*:?\s*\$?(\d+\.?\d*)',
-        r'vat\s*:?\s*\$?(\d+\.?\d*)',
+        r'tax\s*(?:\([\d.]+%\))?\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'sales\s+tax\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'vat\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'gst\s*:?\s*\$?([\d,]+\.?\d*)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             try:
-                tax = float(match.group(1))
-                logger.debug(f"Found tax: ${tax}")
+                # Remove commas and convert to float
+                tax_str = match.group(1).replace(',', '')
+                tax = float(tax_str)
+                logger.debug(f"Found tax: ${tax:,.2f}")
                 return tax
             except ValueError:
                 continue
@@ -275,21 +352,27 @@ def _extract_tax(text: str) -> float:
 
 
 def _extract_total(text: str) -> float:
-    """Extract total amount."""
+    """Extract total amount with support for formatted numbers, avoiding subtotal."""
     patterns = [
-        r'total\s+(?:amount\s+)?due\s*:?\s*\$?(\d+\.?\d*)',
-        r'grand\s+total\s*:?\s*\$?(\d+\.?\d*)',
-        r'total\s*:?\s*\$?(\d+\.?\d*)',
-        r'amount\s+due\s*:?\s*\$?(\d+\.?\d*)',
+        # Use negative lookbehind to avoid matching "subtotal"
+        r'(?<!sub)(?<!Sub)total\s*:?\s*\$?([\d,]+\.?\d*)',  # "TOTAL: $10,850.00" but not "Subtotal"
+        r'total\s+due\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'amount\s+due\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'grand\s+total\s*:?\s*\$?([\d,]+\.?\d*)',
+        r'balance\s+due\s*:?\s*\$?([\d,]+\.?\d*)',
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             try:
-                total = float(match.group(1))
-                logger.debug(f"Found total: ${total}")
-                return total
+                # Remove commas and convert to float
+                total_str = match.group(1).replace(',', '')
+                total = float(total_str)
+                # Validate it's a reasonable total (not too small)
+                if total > 0:
+                    logger.debug(f"Found total: ${total:,.2f}")
+                    return total
             except ValueError:
                 continue
     
